@@ -1,0 +1,417 @@
+Activité Pratique N°3 - Spring MVC Thymeleaf et Spring Security
+═════════════════════════════════════════════════════════════════
+
+Structure du projet
+════════════════════
+product-web-app/
+├── src/main/java/ma/bdcc/
+│   ├── ProductWebApplication.java
+│   ├── entities/Product.java
+│   ├── repositories/ProductRepository.java
+│   ├── web/ProductController.java
+│   └── security/SecurityConfig.java, UserDetailsServiceImpl.java
+├── resources/templates/products.html, formProduct.html, editProduct.html, login.html, template1.html
+├── pom.xml
+└── application.properties
+
+pom.xml
+───────
+<parent>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-parent</artifactId>
+    <version>3.1.5</version>
+</parent>
+<dependencies>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-data-jpa</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-thymeleaf</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-web</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-security</artifactId></dependency>
+    <dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-starter-validation</artifactId></dependency>
+    <dependency><groupId>org.thymeleaf.extras</groupId><artifactId>thymeleaf-extras-springsecurity6</artifactId></dependency>
+    <dependency><groupId>com.h2database</groupId><artifactId>h2</artifactId><scope>runtime</scope></dependency>
+    <dependency><groupId>com.mysql</groupId><artifactId>mysql-connector-j</artifactId><scope>runtime</scope></dependency>
+    <dependency><groupId>org.projectlombok</groupId><artifactId>lombok</artifactId><optional>true</optional></dependency>
+</dependencies>
+
+application.properties
+──────────────────────
+spring.datasource.url=jdbc:h2:mem:product-db
+spring.datasource.driverClassName=org.h2.Driver
+spring.datasource.username=sa
+spring.datasource.password=
+spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+spring.jpa.hibernate.ddl-auto=create
+spring.jpa.show-sql=true
+spring.h2.console.enabled=true
+spring.h2.console.path=/h2-console
+
+Entité Product avec validation
+────────────────────────────────
+@Entity @Data @NoArgsConstructor @AllArgsConstructor @Builder
+public class Product {
+    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @NotBlank(message = "Le nom est obligatoire")
+    private String name;
+
+    @Positive(message = "Le prix doit être positif")
+    private double price;
+
+    @Min(value = 0, message = "La quantité doit être >= 0")
+    private int quantity;
+}
+
+ProductRepository
+─────────────────
+public interface ProductRepository extends JpaRepository<Product, Long> {
+    Page<Product> findByNameContains(String keyword, Pageable pageable);
+}
+
+ProductController
+─────────────────
+@Controller
+public class ProductController {
+    private final ProductRepository productRepository;
+
+    public ProductController(ProductRepository productRepository) {
+        this.productRepository = productRepository;
+    }
+
+    @GetMapping("/")
+    public String home() { return "redirect:/products"; }
+
+    // Liste paginée avec recherche
+    @GetMapping("/products")
+    public String listProducts(
+            @RequestParam(name = "page", defaultValue = "0") int page,
+            @RequestParam(name = "size", defaultValue = "5") int size,
+            @RequestParam(name = "keyword", defaultValue = "") String keyword,
+            Model model) {
+        Page<Product> pageProducts = productRepository.findByNameContains(keyword, PageRequest.of(page, size));
+        model.addAttribute("products", pageProducts.getContent());
+        model.addAttribute("pages", new int[pageProducts.getTotalPages()]);
+        model.addAttribute("currentPage", page);
+        model.addAttribute("keyword", keyword);
+        model.addAttribute("totalPages", pageProducts.getTotalPages());
+        return "products";
+    }
+
+    // Suppression avec retour à la même page
+    @GetMapping("/products/delete/{id}")
+    public String deleteProduct(@PathVariable Long id,
+                                 @RequestParam(name = "page", defaultValue = "0") int page,
+                                 @RequestParam(name = "keyword", defaultValue = "") String keyword) {
+        productRepository.deleteById(id);
+        return "redirect:/products?page=" + page + "&keyword=" + keyword;
+    }
+
+    @GetMapping("/products/add")
+    public String addProductForm(Model model) {
+        model.addAttribute("product", new Product());
+        return "formProduct";
+    }
+
+    @PostMapping("/products/save")
+    public String saveProduct(@Valid @ModelAttribute("product") Product product,
+                               BindingResult bindingResult) {
+        if (bindingResult.hasErrors()) return "formProduct";
+        productRepository.save(product);
+        return "redirect:/products";
+    }
+
+    @GetMapping("/products/edit/{id}")
+    public String editProductForm(@PathVariable Long id, Model model) {
+        Product product = productRepository.findById(id).orElse(null);
+        if (product == null) return "redirect:/products";
+        model.addAttribute("product", product);
+        return "editProduct";
+    }
+
+    @PostMapping("/products/update/{id}")
+    public String updateProduct(@PathVariable Long id,
+                                 @Valid @ModelAttribute("product") Product product,
+                                 BindingResult bindingResult) {
+        if (bindingResult.hasErrors()) return "editProduct";
+        product.setId(id);
+        productRepository.save(product);
+        return "redirect:/products";
+    }
+}
+
+Vues Thymeleaf
+══════════════
+
+products.html (Liste avec pagination)
+──────────────────────────────────────
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org"
+      xmlns:sec="http://www.thymeleaf.org/extras/spring-security">
+<head><meta charset="UTF-8"><title>Produits</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body>
+<div class="container mt-4">
+  <div class="card">
+    <div class="card-header bg-primary text-white d-flex justify-content-between">
+      <h3>Liste des Produits</h3>
+      <span sec:authorize="isAuthenticated()">
+        <a th:href="@{/logout}" class="btn btn-warning btn-sm">Déconnexion</a>
+      </span>
+    </div>
+    <div class="card-body">
+      <form th:action="@{/products}" method="get" class="d-flex mb-3">
+        <input type="text" name="keyword" class="form-control me-2" th:value="${keyword}" placeholder="Rechercher...">
+        <button type="submit" class="btn btn-primary">Chercher</button>
+      </form>
+      <a th:href="@{/products/add}" class="btn btn-success mb-3">Ajouter Produit</a>
+      <table class="table table-striped">
+        <thead><tr><th>ID</th><th>Nom</th><th>Prix</th><th>Qté</th><th>Actions</th></tr></thead>
+        <tbody>
+          <tr th:each="product : ${products}">
+            <td th:text="${product.id}">1</td>
+            <td th:text="${product.name}">Produit</td>
+            <td th:text="${#numbers.formatDecimal(product.price, 2, 2)} + ' €'">0.00</td>
+            <td th:text="${product.quantity}">0</td>
+            <td>
+              <a th:href="@{/products/edit/{id}(id=${product.id})}" class="btn btn-sm btn-warning">Éditer</a>
+              <a th:href="@{/products/delete/{id}(id=${product.id}, page=${currentPage}, keyword=${keyword})}"
+                 class="btn btn-sm btn-danger" onclick="return confirm('Supprimer ?')">Supprimer</a>
+            </td>
+          </tr>
+        </tbody>
+      </table>
+      <!-- Pagination -->
+      <nav><ul class="pagination">
+        <li th:each="i : ${#numbers.sequence(0, totalPages - 1)}"
+            th:classappend="${i == currentPage} ? 'active'" class="page-item">
+          <a class="page-link" th:href="@{/products(page=${i}, keyword=${keyword})}" th:text="${i+1}">1</a>
+        </li>
+      </ul></nav>
+    </div>
+  </div>
+</div></body></html>
+
+formProduct.html (Ajout)
+─────────────────────────
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head><title>Ajouter Produit</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body>
+<div class="container mt-4">
+  <div class="card">
+    <div class="card-header bg-success text-white"><h3>Ajouter un Produit</h3></div>
+    <div class="card-body">
+      <form th:action="@{/products/save}" th:object="${product}" method="post">
+        <div class="mb-3">
+          <label class="form-label">Nom</label>
+          <input type="text" th:field="*{name}" class="form-control"
+                 th:classappend="${#fields.hasErrors('name')} ? 'is-invalid'">
+          <div class="invalid-feedback" th:errors="*{name}">Erreur</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Prix</label>
+          <input type="number" step="0.01" th:field="*{price}" class="form-control"
+                 th:classappend="${#fields.hasErrors('price')} ? 'is-invalid'">
+          <div class="invalid-feedback" th:errors="*{price}">Erreur</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Quantité</label>
+          <input type="number" th:field="*{quantity}" class="form-control"
+                 th:classappend="${#fields.hasErrors('quantity')} ? 'is-invalid'">
+          <div class="invalid-feedback" th:errors="*{quantity}">Erreur</div>
+        </div>
+        <button type="submit" class="btn btn-success">Enregistrer</button>
+        <a th:href="@{/products}" class="btn btn-secondary">Annuler</a>
+      </form>
+    </div>
+  </div>
+</div></body></html>
+
+editProduct.html (identique à formProduct mais URL de soumission différente)
+─────────────────────────────────────────────────────────────────────────────
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head><title>Modifier Produit</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body>
+<div class="container mt-4">
+  <div class="card">
+    <div class="card-header bg-warning text-white"><h3>Modifier Produit #<span th:text="${product.id}">1</span></h3></div>
+    <div class="card-body">
+      <form th:action="@{/products/update/{id}(id=${product.id})}" th:object="${product}" method="post">
+        <!-- mêmes champs que formProduct.html -->
+        <div class="mb-3">
+          <label class="form-label">Nom</label>
+          <input type="text" th:field="*{name}" class="form-control"
+                 th:classappend="${#fields.hasErrors('name')} ? 'is-invalid'">
+          <div class="invalid-feedback" th:errors="*{name}">Erreur</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Prix</label>
+          <input type="number" step="0.01" th:field="*{price}" class="form-control"
+                 th:classappend="${#fields.hasErrors('price')} ? 'is-invalid'">
+          <div class="invalid-feedback" th:errors="*{price}">Erreur</div>
+        </div>
+        <div class="mb-3">
+          <label class="form-label">Quantité</label>
+          <input type="number" th:field="*{quantity}" class="form-control"
+                 th:classappend="${#fields.hasErrors('quantity')} ? 'is-invalid'">
+          <div class="invalid-feedback" th:errors="*{quantity}">Erreur</div>
+        </div>
+        <button type="submit" class="btn btn-warning">Mettre à jour</button>
+        <a th:href="@{/products}" class="btn btn-secondary">Annuler</a>
+      </form>
+    </div>
+  </div>
+</div></body></html>
+
+login.html
+───────────
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+<head><title>Connexion</title>
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet"></head>
+<body>
+<div class="container mt-5">
+  <div class="row justify-content-center">
+    <div class="col-md-4">
+      <div class="card">
+        <div class="card-header bg-primary text-white"><h4>Connexion</h4></div>
+        <div class="card-body">
+          <form th:action="@{/login}" method="post">
+            <div th:if="${param.error}" class="alert alert-danger">Identifiants incorrects</div>
+            <div th:if="${param.logout}" class="alert alert-success">Déconnecté</div>
+            <div class="mb-3">
+              <label class="form-label">Utilisateur</label>
+              <input type="text" name="username" class="form-control" required>
+            </div>
+            <div class="mb-3">
+              <label class="form-label">Mot de passe</label>
+              <input type="password" name="password" class="form-control" required>
+            </div>
+            <button type="submit" class="btn btn-primary w-100">Se connecter</button>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div></body></html>
+
+Spring Security
+═══════════════
+
+SecurityConfig
+──────────────
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    public PasswordEncoder passwordEncoder() { return new BCryptPasswordEncoder(); }
+
+    @Bean
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+        http
+            .formLogin(form -> form
+                .loginPage("/login")
+                .defaultSuccessUrl("/products", true)
+                .permitAll())
+            .rememberMe(remember -> remember
+                .key("uniqueAndSecret")
+                .tokenValiditySeconds(86400))
+            .logout(logout -> logout
+                .logoutUrl("/logout")
+                .logoutSuccessUrl("/login?logout")
+                .permitAll())
+            .authorizeHttpRequests(auth -> auth
+                .requestMatchers("/login", "/css/**", "/h2-console/**").permitAll()
+                .requestMatchers("/products/add/**", "/products/save/**",
+                    "/products/edit/**", "/products/update/**").hasRole("ADMIN")
+                .requestMatchers("/products/**").hasAnyRole("USER", "ADMIN")
+                .anyRequest().authenticated())
+            .csrf(csrf -> csrf.disable())
+            .headers(headers -> headers.frameOptions(frame -> frame.disable()));
+        return http.build();
+    }
+
+    @Bean
+    public UserDetailsService userDetailsService(PasswordEncoder passwordEncoder) {
+        UserDetails admin = User.builder()
+            .username("admin").password(passwordEncoder.encode("admin123"))
+            .roles("ADMIN", "USER").build();
+        UserDetails user = User.builder()
+            .username("user").password(passwordEncoder.encode("user123"))
+            .roles("USER").build();
+        return new InMemoryUserDetailsManager(admin, user);
+    }
+}
+
+UserDetailsServiceImpl (version JPA)
+─────────────────────────────────────
+// Alternative : charger les users depuis la base au lieu de les avoir en mémoire
+@Service
+public class UserDetailsServiceImpl implements UserDetailsService {
+    private final AppUserRepository appUserRepository;
+
+    public UserDetailsServiceImpl(AppUserRepository appUserRepository) {
+        this.appUserRepository = appUserRepository;
+    }
+
+    @Override
+    public UserDetails loadUserByUsername(String username) throws UsernameNotFoundException {
+        AppUser appUser = appUserRepository.findByUsername(username);
+        if (appUser == null) throw new UsernameNotFoundException("User not found");
+        return User.withUsername(appUser.getUsername())
+            .password(appUser.getPassword())
+            .roles(appUser.getRoles().stream()
+                .map(role -> role.getRoleName().replace("ROLE_", ""))
+                .toArray(String[]::new))
+            .build();
+    }
+}
+
+Classe principale
+═════════════════
+@SpringBootApplication
+public class ProductWebApplication {
+    public static void main(String[] args) {
+        SpringApplication.run(ProductWebApplication.class, args);
+    }
+
+    @Bean
+    CommandLineRunner start(ProductRepository productRepository) {
+        return args -> {
+            productRepository.save(Product.builder().name("Ordinateur HP").price(4500.0).quantity(10).build());
+            productRepository.save(Product.builder().name("Imprimante Canon").price(1200.0).quantity(5).build());
+            productRepository.save(Product.builder().name("Smartphone Samsung").price(3000.0).quantity(20).build());
+            productRepository.save(Product.builder().name("Tablette iPad").price(5500.0).quantity(8).build());
+            productRepository.save(Product.builder().name("Casque Audio").price(250.0).quantity(30).build());
+            productRepository.save(Product.builder().name("Clavier Sans Fil").price(150.0).quantity(15).build());
+            productRepository.save(Product.builder().name("Souris Logitech").price(80.0).quantity(25).build());
+            productRepository.save(Product.builder().name("Écran 24 pouces").price(2000.0).quantity(7).build());
+        };
+    }
+}
+
+Résultats attendus
+══════════════════
+1. Login : /login → user/user123 (USER), admin/admin123 (ADMIN)
+2. Liste produits paginée avec recherche
+3. CRUD complet avec validation
+4. Sécurité : admin peut tout faire, user peut juste voir
+5. Remember-Me fonctionnel
+
+Captures
+════════
+1. Page de connexion
+2. Liste des produits paginée
+3. Formulaire d'ajout avec validation
+4. Formulaire d'édition
+5. Recherche par mot-clé
+6. Suppression
+7. Page 403 (accès refusé)
+8. H2 Console
+9. Structure du projet
+
+Vidéo : https://www.youtube.com/watch?v=FHy7raIldgg
